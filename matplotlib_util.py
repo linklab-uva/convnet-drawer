@@ -9,7 +9,7 @@ def save_model_to_file(model, filename):
     ax1.axis('off')
     plt.xlim(model.x, model.x + model.width)
     plt.ylim(model.y + model.height, model.y)
-
+    x_offset = 500
     for feature_map in model.feature_maps + model.layers:
         for obj in feature_map.objects:
             if isinstance(obj, Line):
@@ -19,7 +19,7 @@ def save_model_to_file(model, filename):
                     linestyle = "--"
                 else:
                     linestyle = "-"
-                plt.plot([obj.x1, obj.x2], [obj.y1, obj.y2], color=[c / 255 for c in obj.color], lw=obj.width,
+                plt.plot([obj.x1 + x_offset, obj.x2 + x_offset], [obj.y1, obj.y2], color=[c / 255 for c in obj.color], lw=obj.width,
                          linestyle=linestyle)
             elif isinstance(obj, Text):
                 ax1.text(obj.x, obj.y, obj.body, horizontalalignment="center", verticalalignment="bottom",

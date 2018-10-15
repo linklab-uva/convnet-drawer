@@ -1,8 +1,31 @@
 import math
 from abc import ABCMeta, abstractmethod
 import config
+#base64data = pngFile.read().encode("base64").replace('\n','')
+#base64String = '<image xlink:href="data:image/png;base64,{0}" width="240" height="240" x="0" y="0" />'.format(base64data)
+import PIL
+from PIL import Image
+import base64
+import torchvision.transforms as tf
+import io
+import numpy as np
+class EmbeddedImage:
+    def __init__(self, x1, y1, fp):
+        self.x1, self.y1 = x1, y1
+        self.fp = fp
+        self.size=(2.0*np.array((66,200))).astype(np.int32)
+        self.im = tf.functional.resize(Image.open(self.fp), self.size)
+        self.x2 = self.x1 + self.im.width
+        self.y2 = self.y1 + self.im.height
+        self.right = self.x2
+        imgByteArr = io.BytesIO()
+        self.im.save(imgByteArr, format='PNG')
+        imgByteArr = imgByteArr.getvalue()
+        self.base64data = base64.b64encode(imgByteArr).decode().replace("\n","")
+    def get_svg_string(self):
+        base64String = '<image xlink:href="data:image/png;base64,{0}" width="{1}" height="{2}" x="{3}" y="{4}" />'.format(self.base64data, self.size[1], self.size[0], self.x1-self.size[0]/2, self.y1-self.size[1]/4)
 
-
+        return base64String
 class Line:
     def __init__(self, x1, y1, x2, y2, color=(0, 0, 0), width=1, dasharray=None):
         self.x1, self.y1 = x1, y1
@@ -43,7 +66,7 @@ class Model:
         self.width = None
         self.height = None
 
-        self.feature_maps.append(FeatureMap3D(*input_shape))
+        self.feature_maps.append(FeatureMap3D(*input_shape, draw_box=False))
 
     def add_feature_map(self, layer):
         if isinstance(self.feature_maps[-1], FeatureMap3D):
@@ -54,6 +77,21 @@ class Model:
                 self.feature_maps.append(FeatureMap1D(filters))
             elif isinstance(layer, Flatten):
                 self.feature_maps.append(FeatureMap1D(h * w * filters))
+            elif isinstance(layer, ImageLayer):
+                new_h = math.ceil(h)
+                new_w = math.ceil(w)
+                fm = FeatureMap3D(new_h, new_w, 2, x_offset=0, draw_box=False)
+              #  fm.line_color=(255,255,255)
+                fm.text=""
+                self.feature_maps.append(fm)
+            elif isinstance(layer, Conv2D):
+                if layer.padding == "same":
+                    new_h = math.ceil(h / layer.strides[0])
+                    new_w = math.ceil(w / layer.strides[1])
+                else:
+                    new_h = math.ceil((h - layer.kernel_size[0] + 1) / layer.strides[0])
+                    new_w = math.ceil((w - layer.kernel_size[1] + 1) / layer.strides[1])
+                self.feature_maps.append(FeatureMap3D(new_h, new_w, filters, x_offset=0, line_color=config.batch_norm_color))
             else:
                 if layer.padding == "same":
                     new_h = math.ceil(h / layer.strides[0])
@@ -61,8 +99,7 @@ class Model:
                 else:
                     new_h = math.ceil((h - layer.kernel_size[0] + 1) / layer.strides[0])
                     new_w = math.ceil((w - layer.kernel_size[1] + 1) / layer.strides[1])
-
-                self.feature_maps.append(FeatureMap3D(new_h, new_w, filters))
+                self.feature_maps.append(FeatureMap3D(new_h, new_w, filters, x_offset=0))
         else:
             self.feature_maps.append(FeatureMap1D(layer.filters))
 
@@ -95,9 +132,10 @@ class Model:
         string = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' \
                  'width= "{}" height="{}" '.format(self.width, self.height) + \
                  'viewBox="{} {} {} {}">\n'.format(self.x, self.y, self.width, self.height)
-
+        i = 0
         for feature_map in self.feature_maps:
             string += feature_map.get_object_string()
+            i+=1
 
         for layer in self.layers:
             string += layer.get_object_string()
@@ -133,20 +171,28 @@ class FeatureMap:
 
 
 class FeatureMap3D(FeatureMap):
-    def __init__(self, h, w, c):
+    def __init__(self, h, w, c, draw_box=True, line_color = config.line_color_feature_map, x_offset=0):
         self.h = h
         self.w = w
         self.c = c
+        self.draw_box = draw_box
+        self.line_color = line_color
+        self.x_offset=x_offset
+        self.text = "{}x{}x{}".format(self.h, self.w, self.c)
         super(FeatureMap3D, self).__init__()
 
     def set_objects(self, left):
         self.left = left
         c_ = math.pow(self.c, config.channel_scale)
-        self.right, self.objects = get_rectangular(self.h, self.w, c_, left, config.line_color_feature_map)
-        x = (left + self.right) / 2
+        if self.draw_box:
+            self.right, self.objects = get_rectangular(self.h, self.w, c_, left, self.line_color)
+        else:
+            self.right, self.objects = get_rectangular(self.h, self.w, c_, left, self.line_color)
+            self.objects=[]
+        x =  (left + self.right) / 2 
         y = self.get_top() - config.text_margin
-        self.objects.append(Text(x, y, "{}x{}x{}".format(self.h, self.w, self.c), color=config.text_color_feature_map,
-                                 size=config.text_size))
+        
+        self.objects.append(Text(x, y, self.text, color=config.text_color_feature_map, size=config.text_size) )
 
         return self.right
 
@@ -167,8 +213,9 @@ class FeatureMap3D(FeatureMap):
 
 
 class FeatureMap1D(FeatureMap):
-    def __init__(self, c):
+    def __init__(self, c, draw_box=True):
         self.c = c
+        self.draw_box=draw_box
         super(FeatureMap1D, self).__init__()
 
     def set_objects(self, left):
@@ -182,12 +229,13 @@ class FeatureMap1D(FeatureMap):
         y2 = c_ / 2
         line_color = config.line_color_feature_map
         self.objects = []
-        self.objects.append(Line(x1, y1, x1, y2, line_color))
-        self.objects.append(Line(x1, y2, x2, y2, line_color))
-        self.objects.append(Line(x2, y2, x2, y1, line_color))
-        self.objects.append(Line(x2, y1, x1, y1, line_color))
-        self.objects.append(Text(left + config.one_dim_width / 2, - c_ / 2 - config.text_margin, "{}".format(
-            self.c), color=config.text_color_feature_map, size=config.text_size))
+        if self.draw_box:
+            self.objects.append(Line(x1, y1, x1, y2, line_color))
+            self.objects.append(Line(x1, y2, x2, y2, line_color))
+            self.objects.append(Line(x2, y2, x2, y1, line_color))
+            self.objects.append(Line(x2, y1, x1, y1, line_color))
+        self.objects.append(Text(left + config.one_dim_width / 2, - c_ / 2 - config.text_margin, "{}\n{}".format(
+            self.c,"features"), color=config.text_color_feature_map, size=config.text_size))
 
         return self.right
 
@@ -198,11 +246,12 @@ class FeatureMap1D(FeatureMap):
         return math.pow(self.c, config.channel_scale) / 2
 
 
+    
 class Layer:
     __metaclass__ = ABCMeta
 
     def __init__(self, filters=None, kernel_size=None, strides=(1, 1), padding="valid",
-    draw_lines=True, draw_box=True):
+    draw_lines=True, draw_box=True, line_color = config.line_color_layer, line_color_fm = config.line_color_feature_map):
         self.filters = filters
         self.kernel_size = kernel_size
         self.strides = strides
@@ -213,6 +262,8 @@ class Layer:
         self.description = None
         self.draw_lines=draw_lines
         self.draw_box=draw_box
+        self.line_color=line_color
+        self.line_color_fm=line_color_fm
 
     @abstractmethod
     def get_description(self):
@@ -227,8 +278,9 @@ class Layer:
         start2 = (left + c + self.kernel_size[1] * config.ratio * math.cos(config.theta),
                   -self.kernel_size[1] * config.ratio * math.sin(config.theta) / 2 + self.kernel_size[0] / 2)
         end = self.next_feature_map.get_right_for_conv()
-        line_color = config.line_color_layer
-        left, self.objects = get_rectangular(self.kernel_size[0], self.kernel_size[1], c, left, color=line_color)
+        line_color = self.line_color
+        line_color_fm = self.line_color_fm
+        left, self.objects = get_rectangular(self.kernel_size[0], self.kernel_size[1], c, left, color=line_color_fm)
         if self.draw_lines:
             self.objects.append(Line(start1[0], start1[1], end[0], end[1], color=line_color))
             self.objects.append(Line(start2[0], start2[1], end[0], end[1], color=line_color))
@@ -236,39 +288,69 @@ class Layer:
         x = (self.prev_feature_map.right + self.next_feature_map.left) / 2
         y = max(self.prev_feature_map.get_bottom(), self.next_feature_map.get_bottom()) + config.text_margin \
             + config.text_size
-
+        if isinstance(self,BatchNorm):
+            text_color=config.batch_norm_text_color
+        else:
+            text_color=config.text_color_layer
         for i, description in enumerate(self.get_description()):
-            self.objects.append(Text(x, y + i * config.text_size, "{}".format(description),
-                                     color=config.text_color_layer, size=config.text_size))
+            self.objects.append(Text(x, y + 0.8*i * config.text_size, "{}".format(description),
+                                     color=text_color, size=config.text_size))
 
     def get_object_string(self):
         return get_object_string(self.objects)
 
 
+
 class Conv2D(Layer):
     def get_description(self):
-        return ["conv{}x{}, {}".format(self.kernel_size[0], self.kernel_size[1], self.filters),
-                "stride {}".format(self.strides)]
+        return ["conv{}x{}".format(self.kernel_size[0], self.kernel_size[1]),
+                "{}".format("")]
 
 
 class PoolingLayer(Layer):
-    def __init__(self, pool_size=(2, 2), strides=None, padding="valid", draw_lines=True):
+    def __init__(self, pool_size=(2, 2), strides=None, padding="valid", draw_lines=True, draw_box=True, line_color = config.line_color_layer, line_color_fm = config.line_color_feature_map):
         if not strides:
             strides = pool_size
-        super(PoolingLayer, self).__init__(kernel_size=pool_size, strides=strides, padding=padding, draw_lines=draw_lines)
+        super(PoolingLayer, self).__init__(kernel_size=pool_size, strides=strides, padding=padding, draw_lines=draw_lines, draw_box=draw_box, line_color = line_color, line_color_fm = line_color_fm)
 
+
+class ImageLayer(PoolingLayer):
+    __metaclass__ = ABCMeta
+    
+    def __init__(self, fp):  
+        super(ImageLayer, self).__init__((1,1),draw_lines=False, line_color_fm = (0,255,0))
+        self.fp = fp
+        self.im = None
+    def set_objects(self):
+        self.im = EmbeddedImage(0,0,self.fp)
+        self.objects.append(self.im)
+        self.objects.append(Text(self.im.size[1]/3, self.im.size[0]/2, "Input Optical Flow Field", color=config.text_color_feature_map, size=config.text_size))
+        return self.im.size[1]
+    def get_object_string(self):
+        return get_object_string(self.objects)
+    def get_description(self):
+        return "input flows"
 
 class AveragePooling2D(PoolingLayer):
     def get_description(self):
         return ["avepool{}x{}".format(self.kernel_size[0], self.kernel_size[1]),
                 "stride {}".format(self.strides)]
-
+class BlankLayer(PoolingLayer):
+    def __init__(self):
+        super(BlankLayer, self).__init__((1,1),draw_lines=False, draw_box = False, line_color = (255,255,255), line_color_fm = (0,255,0) )
+        self.objects.clear()
+    def set_objects(self):
+        self.objects.clear()
+    def get_description(self):
+        return ["", ""]
+    def get_object_string(self):
+        return get_object_string(self.objects)
 class BatchNorm(PoolingLayer):
     def __init__(self):
-        super(BatchNorm, self).__init__((1,1),draw_lines=False)
+        super(BatchNorm, self).__init__((1,1),draw_lines=False, draw_box=False,line_color = config.batch_norm_color)
     def get_description(self):
-        return ["Batch",
-                "Normalization"]
+        return ["BN",
+                "+ReLU"]
 
 class MaxPooling2D(PoolingLayer):
     def get_description(self):
@@ -313,15 +395,16 @@ class Flatten(Layer):
 class Dense(Layer):
     def __init__(self, units):
         super(Dense, self).__init__(filters=units)
+        self.x_offset=0
 
     def get_description(self):
         return ["dense"]
 
     def set_objects(self):
-        x1 = self.prev_feature_map.right
+        x1 = self.prev_feature_map.right + self.x_offset
         y11 = - math.pow(self.prev_feature_map.c, config.channel_scale) / 2
         y12 = math.pow(self.prev_feature_map.c, config.channel_scale) / 2
-        x2 = self.next_feature_map.left
+        x2 = self.next_feature_map.left + self.x_offset
         y2 = - math.pow(self.next_feature_map.c, config.channel_scale) / 4
         line_color = config.line_color_layer
         self.objects.append(Line(x1, y11, x2, y2, color=line_color, dasharray=2))
@@ -362,7 +445,9 @@ def get_object_string(objects):
 
 
 def main():
-    model = Model(input_shape=(66, 200, 3))
+    model = Model(input_shape=(66, 200, 2))
+    model.add(ImageLayer("flows_gray.png"))
+    model.add(BlankLayer())
     model.add(Conv2D(24, (5, 5), (2, 2), padding="zero"))
     model.add(BatchNorm())
     model.add(Conv2D(36, (5, 5), (2, 2), padding="zero"))
