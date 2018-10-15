@@ -201,7 +201,8 @@ class FeatureMap1D(FeatureMap):
 class Layer:
     __metaclass__ = ABCMeta
 
-    def __init__(self, filters=None, kernel_size=None, strides=(1, 1), padding="valid"):
+    def __init__(self, filters=None, kernel_size=None, strides=(1, 1), padding="valid",
+    draw_lines=True, draw_box=True):
         self.filters = filters
         self.kernel_size = kernel_size
         self.strides = strides
@@ -210,6 +211,8 @@ class Layer:
         self.prev_feature_map = None
         self.next_feature_map = None
         self.description = None
+        self.draw_lines=draw_lines
+        self.draw_box=draw_box
 
     @abstractmethod
     def get_description(self):
@@ -226,8 +229,9 @@ class Layer:
         end = self.next_feature_map.get_right_for_conv()
         line_color = config.line_color_layer
         left, self.objects = get_rectangular(self.kernel_size[0], self.kernel_size[1], c, left, color=line_color)
-        self.objects.append(Line(start1[0], start1[1], end[0], end[1], color=line_color))
-        self.objects.append(Line(start2[0], start2[1], end[0], end[1], color=line_color))
+        if self.draw_lines:
+            self.objects.append(Line(start1[0], start1[1], end[0], end[1], color=line_color))
+            self.objects.append(Line(start2[0], start2[1], end[0], end[1], color=line_color))
 
         x = (self.prev_feature_map.right + self.next_feature_map.left) / 2
         y = max(self.prev_feature_map.get_bottom(), self.next_feature_map.get_bottom()) + config.text_margin \
@@ -248,10 +252,10 @@ class Conv2D(Layer):
 
 
 class PoolingLayer(Layer):
-    def __init__(self, pool_size=(2, 2), strides=None, padding="valid"):
+    def __init__(self, pool_size=(2, 2), strides=None, padding="valid", draw_lines=True):
         if not strides:
             strides = pool_size
-        super(PoolingLayer, self).__init__(kernel_size=pool_size, strides=strides, padding=padding)
+        super(PoolingLayer, self).__init__(kernel_size=pool_size, strides=strides, padding=padding, draw_lines=draw_lines)
 
 
 class AveragePooling2D(PoolingLayer):
@@ -259,6 +263,12 @@ class AveragePooling2D(PoolingLayer):
         return ["avepool{}x{}".format(self.kernel_size[0], self.kernel_size[1]),
                 "stride {}".format(self.strides)]
 
+class BatchNorm(PoolingLayer):
+    def __init__(self):
+        super(BatchNorm, self).__init__((1,1),draw_lines=False)
+    def get_description(self):
+        return ["Batch",
+                "Normalization"]
 
 class MaxPooling2D(PoolingLayer):
     def get_description(self):
@@ -352,15 +362,18 @@ def get_object_string(objects):
 
 
 def main():
-    model = Model(input_shape=(128, 128, 3))
-    model.add(Conv2D(32, (11, 11), (2, 2), padding="same"))
-    model.add(MaxPooling2D((2, 2)))
-    model.add(Conv2D(64, (7, 7), padding="same"))
-    model.add(AveragePooling2D((2, 2)))
-    model.add(Conv2D(128, (3, 3), padding="same"))
-    model.add(MaxPooling2D((2, 2)))
-    model.add(Conv2D(256, (3, 3), padding="same"))
-    model.add(Conv2D(512, (3, 3), padding="same"))
+    model = Model(input_shape=(66, 200, 3))
+    model.add(Conv2D(24, (5, 5), (2, 2), padding="zero"))
+    model.add(BatchNorm())
+    model.add(Conv2D(36, (5, 5), (2, 2), padding="zero"))
+    model.add(BatchNorm())
+    model.add(Conv2D(48, (5, 5), (2, 2), padding="zero"))
+    model.add(BatchNorm())
+    model.add(Conv2D(64, (3, 3), (1, 1), padding="zero"))
+    model.add(BatchNorm())
+    model.add(Conv2D(64, (3, 3), (1, 1), padding="zero"))
+    model.add(BatchNorm())
+    model.add(Flatten())
     model.save_fig("test.svg")
 
 
